@@ -5,21 +5,29 @@ import os
 import sqlite3
 import time
 import traceback
+import slack
 
-from slackclient import SlackClient
-from websocket import WebSocketConnectionClosedException
-
+# from slackclient import SlackClient
+# from websocket import WebSocketConnectionClosedException
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-d', '--database-path', default='slack.sqlite', help=(
-                    'path to the SQLite database. (default = ./slack.sqlite)'))
-parser.add_argument('-l', '--log-level', default='debug', help=(
-                    'CRITICAL, ERROR, WARNING, INFO or DEBUG (default = DEBUG)'))
+parser.add_argument(
+    "-d",
+    "--database-path",
+    default="slack.sqlite",
+    help=("path to the SQLite database. (default = ./slack.sqlite)"),
+)
+parser.add_argument(
+    "-l",
+    "--log-level",
+    default="debug",
+    help=("CRITICAL, ERROR, WARNING, INFO or DEBUG (default = DEBUG)"),
+)
 args = parser.parse_args()
 
 log_level = args.log_level.upper()
-assert log_level in ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
+assert log_level in ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
 logging.basicConfig(level=getattr(logging, log_level))
 logger = logging.getLogger(__name__)
 
@@ -28,89 +36,107 @@ database_path = args.database_path
 # Connects to the previously created SQL database
 conn = sqlite3.connect(database_path)
 cursor = conn.cursor()
-cursor.execute('create table if not exists messages (message text, user text, channel text, timestamp text, UNIQUE(channel, timestamp) ON CONFLICT REPLACE)')
-cursor.execute('create table if not exists users (name text, id text, avatar text, UNIQUE(id) ON CONFLICT REPLACE)')
-cursor.execute('create table if not exists channels (name text, id text, UNIQUE(id) ON CONFLICT REPLACE)')
+cursor.execute(
+    "create table if not exists messages (message text, user text, channel text, timestamp text, UNIQUE(channel, timestamp) ON CONFLICT REPLACE)"
+)
+cursor.execute(
+    "create table if not exists users (name text, id text, avatar text, UNIQUE(id) ON CONFLICT REPLACE)"
+)
+cursor.execute(
+    "create table if not exists channels (name text, id text, UNIQUE(id) ON CONFLICT REPLACE)"
+)
 
 # This token is given when the bot is started in terminal
-slack_token = os.environ["SLACK_API_TOKEN"]
-
+# slack_token = os.environ["SLACK_API_TOKEN"]
+slack_token = ("xoxp-")
+print(f"slack_token:{slack_token}")
 # Makes bot user active on Slack
 # NOTE: terminal must be running for the bot to continue
-sc = SlackClient(slack_token)
-
+# sc = SlackClient(slack_token)
+sc = slack.WebClient(token=slack_token, run_async=True)
+# https://slack.dev/python-slackclient/auth.html
 # Double naming for better search functionality
 # Keys are both the name and unique ID where needed
 ENV = {
-    'user_id': {},
-    'id_user': {},
-    'channel_id': {},
-    'id_channel': {},
-    'channel_info': {}
+    "user_id": {},
+    "id_user": {},
+    "channel_id": {},
+    "id_channel": {},
+    "channel_info": {},
 }
+
 
 # Uses slack API to get most recent user list
 # Necessary for User ID correlation
-def update_users():
-    logger.info('Updating users')
-    info = sc.api_call('users.list')
-    ENV['user_id'] = dict([(m['name'], m['id']) for m in info['members']])
-    ENV['id_user'] = dict([(m['id'], m['name']) for m in info['members']])
+async def update_users():
+    logger.info("Updating users")
+    info = await sc.api_call("users.list")
+    print("-----")
+    print(info)
+    print("-----")
+    ENV["user_id"] = dict([(m["name"], m["id"]) for m in info["members"]])
+    ENV["id_user"] = dict([(m["id"], m["name"]) for m in info["members"]])
 
     args = []
-    for m in info['members']:
-        args.append((
-            m['name'],
-            m['id'],
-            m['profile'].get('image_72', 'https://secure.gravatar.com/avatar/c3a07fba0c4787b0ef1d417838eae9c5.jpg?s=32&d=https%3A%2F%2Ffst.slack-edge.com%2F66f9%2Fimg%2Favatars%2Fava_0024-32.png')
-        ))
+    for m in info["members"]:
+        args.append(
+            (
+                m["name"],
+                m["id"],
+                m["profile"].get(
+                    "image_72",
+                    "https://secure.gravatar.com/avatar/c3a07fba0c4787b0ef1d417838eae9c5.jpg?s=32&d=https%3A%2F%2Ffst.slack-edge.com%2F66f9%2Fimg%2Favatars%2Fava_0024-32.png",
+                ),
+            )
+        )
     cursor.executemany("INSERT INTO users(name, id, avatar) VALUES(?,?,?)", args)
     conn.commit()
 
+
 def get_user_id(name):
-    if name not in ENV['user_id']:
+    if name not in ENV["user_id"]:
         update_users()
-    return ENV['user_id'].get(name, None)
+    return ENV["user_id"].get(name, None)
 
 
-def update_channels():
+async def update_channels():
     logger.info("Updating channels")
-    info = sc.api_call('channels.list')['channels'] + sc.api_call('groups.list')['groups']
-    ENV['channel_id'] = dict([(m['name'], m['id']) for m in info])
-    ENV['id_channel'] = dict([(m['id'], m['name']) for m in info])
+    info = await (
+        sc.api_call("channels.list")["channels"] + sc.api_call("groups.list")["groups"]
+    )
+    print("---channel---")
+    print(info)
+    print("---channel ends---")
+    ENV["channel_id"] = dict([(m["name"], m["id"]) for m in info])
+    ENV["id_channel"] = dict([(m["id"], m["name"]) for m in info])
 
     args = []
     for m in info:
-        ENV['channel_info'][m['id']] = {
-            'is_private': ('is_group' in m) or m['is_private'],
-            'members': m['members']
+        ENV["channel_info"][m["id"]] = {
+            "is_private": ("is_group" in m) or m["is_private"],
+            "members": m["members"],
         }
 
-        args.append((
-            m['name'],
-            m['id']
-        ))
+        args.append((m["name"], m["id"]))
 
     cursor.executemany("INSERT INTO channels(name, id) VALUES(?,?)", args)
     conn.commit()
 
+
 def get_channel_id(name):
-    if name not in ENV['channel_id']:
+    if name not in ENV["channel_id"]:
         update_channels()
-    return ENV['channel_id'].get(name, None)
+    return ENV["channel_id"].get(name, None)
+
 
 def send_message(message, channel):
-    sc.api_call(
-      "chat.postMessage",
-      channel=channel,
-      text=message
-    )
+    sc.api_call("chat.postMessage", channel=channel, text=message)
+
 
 def can_query_channel(channel_id, user_id):
-    if channel_id in ENV['id_channel']:
-        return (
-            (not ENV['channel_info'][channel_id]['is_private']) or
-            (user_id in ENV['channel_info'][channel_id]['members'])
+    if channel_id in ENV["id_channel"]:
+        return (not ENV["channel_info"][channel_id]["is_private"]) or (
+            user_id in ENV["channel_info"][channel_id]["members"]
         )
 
 
@@ -136,112 +162,126 @@ def handle_query(event):
         sort = None
         limit = 10
 
-        params = event['text'].lower().split()
+        params = event["text"].lower().split()
         for p in params:
             # Handle emoji
             # usual format is " :smiley_face: "
-            if len(p) > 2 and p[0] == ':' and p[-1] == ':':
+            if len(p) > 2 and p[0] == ":" and p[-1] == ":":
                 text.append(p)
                 continue
 
-            p = p.split(':')
+            p = p.split(":")
 
             if len(p) == 1:
                 text.append(p[0])
             if len(p) == 2:
-                if p[0] == 'from':
-                    user = get_user_id(p[1].replace('@','').strip())
+                if p[0] == "from":
+                    user = get_user_id(p[1].replace("@", "").strip())
                     if user is None:
-                        raise ValueError('User %s not found' % p[1])
-                if p[0] == 'in':
-                    channel = get_channel_id(p[1].replace('#','').strip())
+                        raise ValueError("User %s not found" % p[1])
+                if p[0] == "in":
+                    channel = get_channel_id(p[1].replace("#", "").strip())
                     if channel is None:
-                        raise ValueError('Channel %s not found' % p[1])
-                if p[0] == 'sort':
-                    if p[1] in ['asc', 'desc']:
+                        raise ValueError("Channel %s not found" % p[1])
+                if p[0] == "sort":
+                    if p[1] in ["asc", "desc"]:
                         sort = p[1]
                     else:
-                        raise ValueError('Invalid sort order %s' % p[1])
-                if p[0] == 'limit':
+                        raise ValueError("Invalid sort order %s" % p[1])
+                if p[0] == "limit":
                     try:
                         limit = int(p[1])
                     except:
-                        raise ValueError('%s not a valid number' % p[1])
+                        raise ValueError("%s not a valid number" % p[1])
 
-        query = 'SELECT message,user,timestamp,channel FROM messages WHERE message LIKE (?)'
-        query_args=["%"+" ".join(text)+"%"]
+        query = (
+            "SELECT message,user,timestamp,channel FROM messages WHERE message LIKE (?)"
+        )
+        query_args = ["%" + " ".join(text) + "%"]
 
         if user:
-            query += ' AND user=(?)'
+            query += " AND user=(?)"
             query_args.append(user)
         if channel:
-            query += ' AND channel=(?)'
+            query += " AND channel=(?)"
             query_args.append(channel)
         if sort:
-            query += ' ORDER BY timestamp %s' % sort
-            #query_args.append(sort)
+            query += " ORDER BY timestamp %s" % sort
+            # query_args.append(sort)
 
         logger.debug(query)
         logger.debug(query_args)
 
-        cursor.execute(query,query_args)
+        cursor.execute(query, query_args)
 
         res = cursor.fetchmany(limit)
-        res_message=None
+        res_message = None
         if res:
             logger.debug(res)
-            res_message = '\n'.join(
-                ['*<@%s>* _<!date^%s^{date_pretty} {time}|A while ago>_ _<#%s>_\n%s\n\n' % (
-                    i[1], int(float(i[2])), i[3], i[0]
-                ) for i in res if can_query_channel(i[3], event['user'])]
+            res_message = "\n".join(
+                [
+                    "*<@%s>* _<!date^%s^{date_pretty} {time}|A while ago>_ _<#%s>_\n%s\n\n"
+                    % (i[1], int(float(i[2])), i[3], i[0])
+                    for i in res
+                    if can_query_channel(i[3], event["user"])
+                ]
             )
         if res_message:
-            send_message(res_message, event['channel'])
+            send_message(res_message, event["channel"])
         else:
-            send_message('No results found', event['channel'])
+            send_message("No results found", event["channel"])
     except ValueError as e:
         logger.error(traceback.format_exc())
-        send_message(str(e), event['channel'])
+        send_message(str(e), event["channel"])
+
 
 def handle_message(event):
-    if 'text' not in event:
+    if "text" not in event:
         return
-    if 'subtype' in event and event['subtype'] == 'bot_message':
+    if "subtype" in event and event["subtype"] == "bot_message":
         return
 
     logger.debug(event)
 
     # If it's a DM, treat it as a search query
-    if event['channel'][0] == 'D':
+    if event["channel"][0] == "D":
         handle_query(event)
-    elif 'user' not in event:
+    elif "user" not in event:
         logger.warn("No valid user. Previous event not saved")
-    else: # Otherwise save the message to the archive.
-        cursor.executemany('INSERT INTO messages VALUES(?, ?, ?, ?)',
-            [(event['text'], event['user'], event['channel'], event['ts'])]
+    else:  # Otherwise save the message to the archive.
+        cursor.executemany(
+            "INSERT INTO messages VALUES(?, ?, ?, ?)",
+            [(event["text"], event["user"], event["channel"], event["ts"])],
         )
         conn.commit()
 
     logger.debug("--------------------------")
 
+
 # Loop
 if sc.rtm_connect(auto_reconnect=True):
     update_users()
     update_channels()
-    logger.info('Archive bot online. Messages will now be recorded...')
-    while sc.server.connected is True:
+    logger.info("Archive bot online. Messages will now be recorded...")
+    while ENV["user_id"] != "":
         try:
-            for event in sc.rtm_read():
-                if event['type'] == 'message':
+            for event in sc.api_call("conversations.history"):
+                print(event.)
+                if event["type"] == "message":
                     handle_message(event)
-                    if 'subtype' in event and event['subtype'] in ['group_leave']:
+                    if "subtype" in event and event["subtype"] in ["group_leave"]:
                         update_channels()
-                elif event['type'] in ['group_joined', 'member_joined_channel', 'channel_created', 'group_left']:
+                elif event["type"] in [
+                    "group_joined",
+                    "member_joined_channel",
+                    "channel_created",
+                    "group_left",
+                ]:
                     update_channels()
-        except WebSocketConnectionClosedException:
-            sc.rtm_connect()
-        except:
+        # except WebSocketConnectionClosedException:
+        #     sc.rtm_connect()
+        except Exception:
             logger.error(traceback.format_exc())
         time.sleep(1)
 else:
-    logger.error('Connection Failed, invalid token?')
+    logger.error("Connection Failed, invalid token?")
